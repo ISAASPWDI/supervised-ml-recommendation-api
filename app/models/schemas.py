@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 class UserProfile(BaseModel):
     user_id: str
@@ -17,10 +17,11 @@ class RecommendationRequest(BaseModel):
     limit: Optional[int] = 10
 
 class RecommendationResponse(BaseModel):
-    recommendations: List[Dict]
+    recommendations: List[Dict[str, Any]]  # lista de recomendaciones
+    total_filtered: int                    # <-- agregamos este campo
     model_version: str
     generated_at: str
-
+    
 class TrainingResult(BaseModel):
     status: str
     users_processed: int

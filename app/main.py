@@ -42,14 +42,15 @@ async def startup_event():
 @app.post("/recommendations", response_model=RecommendationResponse)
 async def get_recommendations(request: RecommendationRequest):
     """Endpoint principal para obtener recomendaciones"""
-    recommendations = matcher.get_recommendations(
+    result = matcher.get_recommendations(
         user_id=request.user_id,
         exclude_users=request.exclude_users,
         limit=request.limit
     )
     
     return RecommendationResponse(
-        recommendations=recommendations,
+        recommendations=result["recommendations"],  # lista de recomendaciones
+        total_filtered=result["total_filtered"],    # número total
         model_version=settings.API_VERSION,
         generated_at=datetime.now().isoformat()
     )
@@ -92,4 +93,16 @@ async def root():
         "status": "running",
         "model_trained": health_data["model_trained"],
         "documentation": "/docs"
+    }
+@app.get("/model/validation")
+async def validate_model():
+    """Endpoint para obtener métricas de validación (tu matriz)"""
+    metrics = matcher.calculate_validation_metrics()
+    return {
+        "validation_metrics": metrics,
+        "interpretation": {
+            "accuracy_status": "PASS" if metrics['accuracy'] >= 0.80 else "FAIL",
+            "precision_status": "PASS" if metrics['precision'] >= 0.75 else "FAIL",
+            "recall_status": "PASS" if metrics['recall'] >= 0.70 else "FAIL"
+        }
     }

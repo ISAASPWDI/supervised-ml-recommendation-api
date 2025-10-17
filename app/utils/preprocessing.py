@@ -6,145 +6,209 @@ from ..config.settings import settings
 
 class FeaturePreprocessor:
     def __init__(self):
-        self.scaler = StandardScaler()
-        self.tfidf_skills = TfidfVectorizer(max_features=settings.MAX_SKILLS_FEATURES)
-        self.tfidf_objectives = TfidfVectorizer(max_features=settings.MAX_OBJECTIVES_FEATURES)
+        # TF-IDF SOLO para skills y objectives - ENFOQUE EXCLUSIVO
+        self.tfidf_skills = TfidfVectorizer(
+            max_features=settings.MAX_SKILLS_FEATURES,
+            lowercase=True,
+            strip_accents='unicode',
+            ngram_range=(1, 2)  # Bigramas para mejor matching
+        )
+        self.tfidf_objectives = TfidfVectorizer(
+            max_features=settings.MAX_OBJECTIVES_FEATURES,
+            lowercase=True,
+            strip_accents='unicode'
+        )
         
-        # Mapeos para features categóricas
-        self.time_mapping = {
-            'Mañana': 0, 'Tarde': 1, 'Noche': 2, 
-            'Fines de semana': 3, 'Flexible': 4
-        }
-        self.commitment_mapping = {
-            'Casual': 0, 'Moderado': 1, 'Intensivo': 2
+        # PESOS SIMPLIFICADOS: SOLO Skills + Objectives
+        self.feature_weights = {
+            'skills_technical': 0.35,   # 35% - Technical skills
+            'skills_interests': 0.30,   # 30% - Interests
+            'objectives': 0.35,         # 35% - Primary objectives
         }
     
     def extract_user_features(self, users_data):
-        """Extrae y procesa características de los usuarios"""
+        """Extrae SOLO skills.technical, skills.interests y objectives.primary"""
         if not users_data:
             raise ValueError("No hay datos de usuarios para procesar")
         
         user_df = pd.DataFrame(users_data)
         features = []
         
+        print(f"\n{'='*70}")
+        print(f"🎯 EXTRAYENDO FEATURES - MODO: SKILLS & OBJECTIVES ONLY")
+        print(f"{'='*70}\n")
+        
         for _, user in user_df.iterrows():
             try:
                 feature_dict = self._process_single_user(user)
                 features.append(feature_dict)
             except Exception as e:
-                print(f"Error procesando usuario {user.get('user_id', 'unknown')}: {e}")
+                print(f"⚠️ Error procesando usuario {user.get('user_id', 'unknown')}: {e}")
                 continue
         
-        print(f"Features procesadas para {len(features)} usuarios")
+        print(f"\n✅ Features procesadas para {len(features)} usuarios")
+        print(f"   📊 Componentes: Technical Skills + Interests + Objectives\n")
         return features, user_df
     
     def _process_single_user(self, user):
-        """Procesa un usuario individual"""
-        # 1. Skills como texto para TF-IDF
+        """Procesa usuario - SOLO SKILLS Y OBJECTIVES"""
+        user_id = user.get('user_id', 'unknown')
+        
+        # 1. SKILLS TECHNICAL (PRIORIDAD ALTA)
         skills_technical = user.get('skills', {}).get('technical', [])
+        skills_technical_text = ' '.join(skills_technical) if skills_technical else ''
+        
+        # 2. SKILLS INTERESTS (PRIORIDAD ALTA)
         skills_interests = user.get('skills', {}).get('interests', [])
-        skills_text = ' '.join(skills_technical + skills_interests) if skills_technical or skills_interests else 'sin skills'
+        skills_interests_text = ' '.join(skills_interests) if skills_interests else ''
         
-        # 2. Objetivos como texto para TF-IDF  
+        # 3. OBJECTIVES PRIMARY (PRIORIDAD ALTA)
         objectives = user.get('objectives', {}).get('primary', [])
-        objectives_text = ' '.join(objectives) if objectives else 'sin objetivos'
+        objectives_text = ' '.join(objectives) if objectives else ''
         
-        # 3. Features numéricas con valores por defecto
+        # Validación: al menos debe tener algo
+        if not (skills_technical_text or skills_interests_text or objectives_text):
+            print(f"⚠️ Usuario {user_id}: Sin skills ni objectives - usando placeholder")
+            skills_technical_text = 'sin_skills'
+            objectives_text = 'sin_objetivos'
+        
+        # METADATA (NO SE USA EN MATCHING, solo para referencia)
         profile = user.get('profile', {})
-        location = profile.get('location', {})
-        coordinates = location.get('coordinates', settings.DEFAULT_COORDINATES)
         
-        numeric_features = [
-            profile.get('age', 20),
-            profile.get('semester', 5),
-            coordinates[0] if len(coordinates) > 0 else settings.DEFAULT_COORDINATES[0],  # lng
-            coordinates[1] if len(coordinates) > 1 else settings.DEFAULT_COORDINATES[1],  # lat
-        ]
-        
-        # 4. Features categóricas con valores por defecto
-        objectives_data = user.get('objectives', {})
-        categorical_features = [
-            self.time_mapping.get(objectives_data.get('timeAvailability'), 1),  # Tarde por defecto
-            self.commitment_mapping.get(objectives_data.get('commitmentLevel'), 1)  # Moderado por defecto
-        ]
-        
-        return {
-            'user_id': user['user_id'],
-            'skills_text': skills_text,
+        feature_dict = {
+            'user_id': user_id,
+            # FEATURES PARA MATCHING
+            'skills_technical_text': skills_technical_text,
+            'skills_interests_text': skills_interests_text,
             'objectives_text': objectives_text,
-            'numeric': numeric_features,
-            'categorical': categorical_features
+            # METADATA (solo informativa, NO entra al KNN)
+            'semester': profile.get('semester', 5),
+            'age': profile.get('age', 20),
+            'location': profile.get('location', {}).get('coordinates', settings.DEFAULT_COORDINATES),
+            'university': profile.get('university', 'No especificada'),
+            'time_availability': user.get('objectives', {}).get('timeAvailability', 'No especificado'),
         }
+        
+        return feature_dict
     
     def create_feature_matrix(self, features):
-        """Crea la matriz final de características para ML"""
+        """Crea matriz SOLO con Skills (technical + interests) + Objectives"""
         if len(features) < 2:
-            raise ValueError("No se pudieron procesar suficientes características")
+            raise ValueError("Insuficientes características procesadas")
         
-        print("📊 Creando matrices de características...")
+        print(f"\n{'='*70}")
+        print(f"🔧 CONSTRUYENDO MATRIZ DE FEATURES - PONDERACIÓN")
+        print(f"{'='*70}\n")
         
-        # Extraer textos
-        skills_texts = [f['skills_text'] for f in features]
+        # 1. TF-IDF para TECHNICAL SKILLS - 35%
+        technical_texts = [f['skills_technical_text'] for f in features]
+        technical_matrix = self.tfidf_skills.fit_transform(technical_texts).toarray()
+        technical_weighted = technical_matrix * self.feature_weights['skills_technical']
+        
+        print(f"✅ Technical Skills:")
+        print(f"   Dimensiones: {technical_matrix.shape}")
+        print(f"   Peso aplicado: {self.feature_weights['skills_technical']*100:.0f}%")
+        print(f"   Vocabulario: {len(self.tfidf_skills.vocabulary_)} términos únicos\n")
+        
+        # 2. TF-IDF para INTERESTS - 30%
+        interests_texts = [f['skills_interests_text'] for f in features]
+        # Usamos el mismo vectorizador pero con fit separado para mantener independencia
+        tfidf_interests = TfidfVectorizer(
+            max_features=50,  # Menos features para interests
+            lowercase=True,
+            strip_accents='unicode'
+        )
+        interests_matrix = tfidf_interests.fit_transform(interests_texts).toarray()
+        interests_weighted = interests_matrix * self.feature_weights['skills_interests']
+        
+        print(f"✅ Interests:")
+        print(f"   Dimensiones: {interests_matrix.shape}")
+        print(f"   Peso aplicado: {self.feature_weights['skills_interests']*100:.0f}%")
+        print(f"   Vocabulario: {len(tfidf_interests.vocabulary_)} términos únicos\n")
+        
+        # 3. TF-IDF para OBJECTIVES - 35%
         objectives_texts = [f['objectives_text'] for f in features]
+        objectives_matrix = self.tfidf_objectives.fit_transform(objectives_texts).toarray()
+        objectives_weighted = objectives_matrix * self.feature_weights['objectives']
         
-        # Aplicar TF-IDF
-        skills_matrix = self.tfidf_skills.fit_transform(skills_texts)
-        objectives_matrix = self.tfidf_objectives.fit_transform(objectives_texts)
+        print(f"✅ Objectives:")
+        print(f"   Dimensiones: {objectives_matrix.shape}")
+        print(f"   Peso aplicado: {self.feature_weights['objectives']*100:.0f}%")
+        print(f"   Vocabulario: {len(self.tfidf_objectives.vocabulary_)} términos únicos\n")
         
-        # Combinar features numéricas y categóricas
-        numeric_categorical = np.array([f['numeric'] + f['categorical'] for f in features])
-        numeric_categorical_scaled = self.scaler.fit_transform(numeric_categorical)
-        
-        # Matriz final combinada
+        # 4. CONCATENAR: Technical + Interests + Objectives
         feature_matrix = np.hstack([
-            skills_matrix.toarray(),
-            objectives_matrix.toarray(), 
-            numeric_categorical_scaled
+            technical_weighted,
+            interests_weighted,
+            objectives_weighted
         ])
+        
+        print(f"{'='*70}")
+        print(f"✅ MATRIZ FINAL CONSTRUIDA")
+        print(f"{'='*70}")
+        print(f"   Shape total: {feature_matrix.shape}")
+        print(f"   Total features: {feature_matrix.shape[1]}")
+        print(f"   Usuarios: {feature_matrix.shape[0]}")
+        print(f"   Distribución:")
+        print(f"     • Technical Skills: {technical_matrix.shape[1]} features (35%)")
+        print(f"     • Interests: {interests_matrix.shape[1]} features (30%)")
+        print(f"     • Objectives: {objectives_matrix.shape[1]} features (35%)")
+        print(f"\n   ⚠️  Edad, semestre, tiempo y ubicación NO incluidos en matching")
+        print(f"   ℹ️  Solo se usan como metadata informativa\n")
         
         return feature_matrix
     
     def get_match_reasons(self, user_data, user_idx, candidate_idx):
-        """Calcula las razones específicas del match entre dos usuarios"""
+        """Calcula razones del match basadas SOLO en Skills + Objectives"""
         try:
             user = user_data.iloc[user_idx]
             candidate = user_data.iloc[candidate_idx]
             
             reasons = []
             
-            # Skills en común
-            user_skills = self._get_user_skills(user)
-            candidate_skills = self._get_user_skills(candidate)
-            common_skills = user_skills.intersection(candidate_skills)
+            # 1. TECHNICAL SKILLS en común
+            user_technical = set(user.get('skills', {}).get('technical', []))
+            candidate_technical = set(candidate.get('skills', {}).get('technical', []))
+            common_technical = user_technical.intersection(candidate_technical)
             
-            if common_skills:
-                reasons.append(f"Habilidades en común: {', '.join(list(common_skills)[:3])}")
+            if common_technical:
+                tech_list = list(common_technical)[:4]  # Top 4
+                reasons.append(f"💻 Technical: {', '.join(tech_list)}")
             
-            # Objetivos similares
+            # 2. INTERESTS en común
+            user_interests = set(user.get('skills', {}).get('interests', []))
+            candidate_interests = set(candidate.get('skills', {}).get('interests', []))
+            common_interests = user_interests.intersection(candidate_interests)
+            
+            if common_interests:
+                interests_list = list(common_interests)[:3]
+                reasons.append(f"💡 Interests: {', '.join(interests_list)}")
+            
+            # 3. OBJECTIVES similares
             user_objectives = set(user.get('objectives', {}).get('primary', []))
             candidate_objectives = set(candidate.get('objectives', {}).get('primary', []))
             common_objectives = user_objectives.intersection(candidate_objectives)
             
             if common_objectives:
-                reasons.append(f"Objetivos similares: {', '.join(list(common_objectives)[:2])}")
+                obj_list = list(common_objectives)[:2]
+                reasons.append(f"🎯 Objectives: {', '.join(obj_list)}")
             
-            # Proximidad de semestre
-            user_semester = user.get('profile', {}).get('semester', 0)
-            candidate_semester = candidate.get('profile', {}).get('semester', 0)
-            semester_diff = abs(user_semester - candidate_semester)
+            # 4. INFO COMPLEMENTARIA (NO afecta el matching)
+            candidate_profile = candidate.get('profile', {})
+            candidate_semester = candidate_profile.get('semester', 'N/A')
+            candidate_university = candidate_profile.get('university', 'N/A')
             
-            if semester_diff <= 1:
-                reasons.append("Semestres cercanos")
+            reasons.append(f"ℹ️ Semestre {candidate_semester} - {candidate_university}")
             
-            return reasons if reasons else ["Perfil compatible"]
+            return reasons if reasons else ["✅ Perfil compatible por skills y objetivos"]
             
         except Exception as e:
-            print(f"Error calculando razones de match: {e}")
-            return ["Perfil compatible"]
+            print(f"⚠️ Error calculando razones: {e}")
+            return ["✅ Perfil compatible"]
     
     def _get_user_skills(self, user):
-        """Obtiene todas las habilidades de un usuario"""
+        """Extrae todos los skills (technical + interests) normalizados"""
         skills_data = user.get('skills', {})
-        technical_skills = skills_data.get('technical', [])
-        interest_skills = skills_data.get('interests', [])
-        return set(technical_skills + interest_skills)
+        technical = [s.lower().strip() for s in skills_data.get('technical', []) if s]
+        interests = [s.lower().strip() for s in skills_data.get('interests', []) if s]
+        return set(technical + interests)
