@@ -1,61 +1,70 @@
 import os
 from dotenv import load_dotenv
+from ast import literal_eval
 
-# Cargar variables de entorno
+# Cargar variables del archivo .env
 load_dotenv()
 
 class Settings:
-    # MongoDB
-    MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://admin:17032004@localhost:27017/studysync?authSource=admin")
-    DATABASE_NAME = "studysync"
-    COLLECTION_NAME = "users"
-    
-    # API
+    """Configuración general del servicio ML"""
+
+    # 🗄️ MongoDB
+    MONGODB_URI = os.getenv("MONGODB_URI")
+    DATABASE_NAME = os.getenv("DATABASE_NAME", "studysync")
+    COLLECTION_NAME = os.getenv("COLLECTION_NAME", "users")
+
+    # 🚀 API
     API_TITLE = "Academic Match ML Service"
-    API_VERSION = "2.0.0"  # Nueva versión optimizada
-    
-    # CORS
-    CORS_ORIGINS = ["http://localhost:3000", "http://localhost:3001"]
-    
-    # Machine Learning
-    MIN_USERS_FOR_TRAINING = 2
-    PROFILE_COMPLETION_MIN = 50
-    LAST_ACTIVE_DAYS = 90
-    
-    # TF-IDF Features
-    MAX_SKILLS_FEATURES = 100
-    MAX_OBJECTIVES_FEATURES = 50
-    
-    # KNN - CONFIGURACIÓN CRÍTICA SEGÚN TU INVESTIGACIÓN
-    OPTIMAL_K_NEIGHBORS = 3  # ✅ Tu análisis mostró que K=3 es óptimo
-    MAX_K_NEIGHBORS = 10     # Límite máximo para búsquedas amplias
-    KNN_METRIC = "cosine"
-    KNN_ALGORITHM = "brute"
-    
-    # NUEVO: Filtros según indicadores de tu matriz de operacionalización
-    MAX_SEMESTER_DIFFERENCE = 1  # ✅ Indicador clave: "diferencia ≤1 semestre"
-    MAX_AGE_DIFFERENCE = 5       # Diferencia máxima de edad (años)
-    MIN_SKILL_OVERLAP = 1        # Mínimo de habilidades en común
-    
-    # Recommendations
-    DEFAULT_RECOMMENDATION_LIMIT = 10
-    
-    # Locations (Lima default)
+    API_VERSION = "2.0.0"
+
+    # 🌐 CORS
+    # Soporta lista desde .env, por ejemplo: CORS_ORIGINS=["https://studysync.onrender.com", "http://localhost:3000"]
+    try:
+        CORS_ORIGINS = literal_eval(os.getenv("CORS_ORIGINS", "['http://localhost:3000']"))
+    except Exception:
+        CORS_ORIGINS = ["http://localhost:3000"]
+
+    # 🧠 Machine Learning
+    MIN_USERS_FOR_TRAINING = int(os.getenv("MIN_USERS_FOR_TRAINING", 2))
+    PROFILE_COMPLETION_MIN = int(os.getenv("PROFILE_COMPLETION_MIN", 50))
+    LAST_ACTIVE_DAYS = int(os.getenv("LAST_ACTIVE_DAYS", 90))
+
+    # 🔢 TF-IDF
+    MAX_SKILLS_FEATURES = int(os.getenv("MAX_SKILLS_FEATURES", 100))
+    MAX_OBJECTIVES_FEATURES = int(os.getenv("MAX_OBJECTIVES_FEATURES", 50))
+
+    # 🧩 KNN Configuración
+    OPTIMAL_K_NEIGHBORS = int(os.getenv("OPTIMAL_K_NEIGHBORS", 3))
+    MAX_K_NEIGHBORS = int(os.getenv("MAX_K_NEIGHBORS", 10))
+    KNN_METRIC = os.getenv("KNN_METRIC", "cosine")
+    KNN_ALGORITHM = os.getenv("KNN_ALGORITHM", "brute")
+
+    # 📊 Filtros
+    MAX_SEMESTER_DIFFERENCE = int(os.getenv("MAX_SEMESTER_DIFFERENCE", 1))
+    MAX_AGE_DIFFERENCE = int(os.getenv("MAX_AGE_DIFFERENCE", 5))
+    MIN_SKILL_OVERLAP = int(os.getenv("MIN_SKILL_OVERLAP", 1))
+
+    # 🔁 Recomendaciones
+    DEFAULT_RECOMMENDATION_LIMIT = int(os.getenv("DEFAULT_RECOMMENDATION_LIMIT", 10))
+
+    # 📍 Coordenadas por defecto
     DEFAULT_COORDINATES = [-77.0428, -12.0464]
-    
-    # NUEVO: Umbrales para métricas de validación (tu matriz)
-    MIN_ACCURACY_THRESHOLD = 0.80       # 80% accuracy mínima
-    MIN_PRECISION_THRESHOLD = 0.75      # 75% precision mínima
-    MIN_RECALL_THRESHOLD = 0.70         # 70% recall mínimo
-    
-    # NUEVO: Ponderación de features (ajustable según experimentos)
+
+    # 📈 Métricas de validación
+    MIN_ACCURACY_THRESHOLD = float(os.getenv("MIN_ACCURACY_THRESHOLD", 0.80))
+    MIN_PRECISION_THRESHOLD = float(os.getenv("MIN_PRECISION_THRESHOLD", 0.75))
+    MIN_RECALL_THRESHOLD = float(os.getenv("MIN_RECALL_THRESHOLD", 0.70))
+
+    # ⚖️ Ponderación de características
     FEATURE_WEIGHTS = {
-        'skills': 0.30,        # 30% - Habilidades complementarias
-        'objectives': 0.25,    # 25% - Objetivos similares
-        'semester': 0.20,      # 20% - CRÍTICO para tu matriz
-        'age': 0.10,          # 10% - Compatibilidad etaria
-        'time': 0.10,         # 10% - Disponibilidad horaria
-        'commitment': 0.05    # 5% - Nivel de compromiso
+        'skills': float(os.getenv("WEIGHT_SKILLS", 0.30)),
+        'objectives': float(os.getenv("WEIGHT_OBJECTIVES", 0.25)),
+        'semester': float(os.getenv("WEIGHT_SEMESTER", 0.20)),
+        'age': float(os.getenv("WEIGHT_AGE", 0.10)),
+        'time': float(os.getenv("WEIGHT_TIME", 0.10)),
+        'commitment': float(os.getenv("WEIGHT_COMMITMENT", 0.05)),
     }
 
+
+# Instancia global
 settings = Settings()
