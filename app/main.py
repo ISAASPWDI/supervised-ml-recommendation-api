@@ -1,11 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 
+import pandas as pd
+
 from .models.matcher import AcademicMatcher
 from .models.schemas import (
-    RecommendationRequest, RecommendationResponse, 
-    HealthResponse, ModelStatsResponse
+    BulkSyncResponse, RecommendationRequest, RecommendationResponse, 
+    HealthResponse, ModelStatsResponse, UserSyncRequest
 )
 from .config.settings import settings
 
@@ -54,6 +56,142 @@ async def get_recommendations(request: RecommendationRequest):
         model_version=settings.API_VERSION,
         generated_at=datetime.now().isoformat()
     )
+@app.post("/users/sync")
+async def sync_user(request: UserSyncRequest):
+    """
+    Sincroniza un usuario específico desde MongoDB al sistema de ML
+    """
+    try:
+        print(f"🔄 Sincronizando usuario {request.user_id}...")
+        
+        # Verificar si ya existe
+        user_mask = matcher.user_data['user_id'] == request.user_id
+        exists = user_mask.any()
+        
+        if exists and not request.force_reload:
+            return {
+                "success": True,
+                "message": f"Usuario {request.user_id} ya existe en el sistema",
+                "action": "skipped"
+            }
+        
+        # Recargar usuario
+        if exists:
+            # Eliminar usuario existente primero
+            matcher.user_data = matcher.user_data[~user_mask]
+            print(f"   Usuario existente eliminado, recargando...")
+        
+        # Cargar desde MongoDB
+        matcher._reload_single_user(request.user_id)
+        
+        return {
+            "success": True,
+            "message": f"Usuario {request.user_id} sincronizado exitosamente",
+            "action": "reloaded" if exists else "added",
+            "total_users": len(matcher.user_data)
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Error sincronizando: {str(e)}")
+
+
+@app.post("/users/sync-all", response_model=BulkSyncResponse)
+async def sync_all_users():
+    """
+    Recarga TODOS los usuarios desde MongoDB
+    Útil después de migraciones o cambios masivos
+    """
+    try:
+        print("🔄 Iniciando sincronización masiva...")
+        
+        # Obtener todos los usuarios de MongoDB
+        from bson import ObjectId
+        users_cursor = matcher.db['users'].find({
+            "profile": {"$exists": True},  # Solo usuarios con perfil completo
+            "activity.isActive": True  # Solo usuarios activos
+        })
+        
+        synced = 0
+        failed = 0
+        
+        # Limpiar DataFrame actual
+        matcher.user_data = pd.DataFrame()
+        matcher.features_list = []
+        
+        for user_doc in users_cursor:
+            try:
+                user_id = str(user_doc['_id'])
+                user_row = matcher._convert_mongo_doc_to_dataframe_row(user_doc)
+                
+                # Agregar al DataFrame
+                matcher.user_data = pd.concat(
+                    [matcher.user_data, pd.DataFrame([user_row])], 
+                    ignore_index=True
+                )
+                
+                synced += 1
+                
+                if synced % 10 == 0:
+                    print(f"   Procesados: {synced} usuarios...")
+                
+            except Exception as e:
+                print(f"❌ Error procesando usuario {user_id}: {e}")
+                failed += 1
+        
+        # Reconstruir features y modelo
+        print("🔨 Reconstruyendo features y modelo KNN...")
+        matcher._rebuild_features()
+        matcher._rebuild_knn_model()
+        
+        print(f"✅ Sincronización completa:")
+        print(f"   Sincronizados: {synced}")
+        print(f"   Fallidos: {failed}")
+        
+        return BulkSyncResponse(
+            success=True,
+            users_synced=synced,
+            users_failed=failed,
+            message=f"Sincronización masiva completada. {synced} usuarios cargados."
+        )
+        
+    except Exception as e:
+        print(f"❌ Error en sincronización masiva: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error en sincronización: {str(e)}"
+        )
+
+
+@app.get("/users/{user_id}/exists")
+async def check_user_exists(user_id: str):
+    """
+    Verifica si un usuario existe en el sistema de ML
+    """
+    user_mask = matcher.user_data['user_id'] == user_id
+    exists = user_mask.any()
+    
+    if exists:
+        user_idx = matcher.user_data[user_mask].index[0]
+        user_info = matcher.features_list[user_idx]
+        
+        return {
+            "exists": True,
+            "user_id": user_id,
+            "data": {
+                "university": user_info.get('university'),
+                "semester": user_info.get('semester'),
+                "age": user_info.get('age'),
+            }
+        }
+    
+    return {
+        "exists": False,
+        "user_id": user_id,
+        "message": "Usuario no encontrado en el sistema de ML"
+    }
 
 @app.post("/retrain")
 async def retrain_model():

@@ -39,3 +39,12 @@ class ModelStatsResponse(BaseModel):
     feature_dimensions: int
     k_neighbors: int
     last_trained: str
+class UserSyncRequest(BaseModel):
+    user_id: str
+    force_reload: bool = False
+
+class BulkSyncResponse(BaseModel):
+    success: bool
+    users_synced: int
+    users_failed: int
+    message: str
