@@ -10,7 +10,10 @@ from .models.schemas import (
     HealthResponse, ModelStatsResponse, UserSyncRequest
 )
 from .config.settings import settings
-from .utils.database import DatabaseManager
+from .utils.database import DatabaseManager  # 👈 IMPORTAR DatabaseManager
+# Si no funciona, prueba una de estas alternativas:
+# from app.config.database import DatabaseManager
+# from config.database import DatabaseManager
 
 # Crear instancia de FastAPI
 app = FastAPI(
@@ -123,8 +126,11 @@ async def sync_all_users():
         
         for user_doc in users_docs:
             try:
-                user_id = user_doc.get('user_id') or str(user_doc['_id'])
-                user_row = matcher._convert_mongo_doc_to_dataframe_row(user_doc)
+                user_id = user_doc.get('user_id') or str(user_doc.get('_id', ''))
+                
+                # El user_doc ya viene en el formato correcto desde get_active_users()
+                # No necesitamos convertir, solo agregarlo directamente
+                user_row = user_doc
                 
                 # Agregar al DataFrame
                 matcher.user_data = pd.concat(

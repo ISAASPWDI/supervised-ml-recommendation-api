@@ -318,3 +318,127 @@ class AcademicMatcher:
             "users_loaded": len(self.user_data) if self.user_data is not None else 0,
             "filtering_mode": "semester_priority"
         }
+    # Agregar estos métodos a tu clase AcademicMatcher (después del método is_healthy)
+
+def _convert_mongo_doc_to_dataframe_row(self, user_doc: Dict) -> Dict:
+    """
+    Convierte un documento de MongoDB al formato esperado por el DataFrame
+    """
+    profile = user_doc.get('profile', {})
+    skills = user_doc.get('skills', {})
+    objectives = user_doc.get('objectives', {})
+    
+    return {
+        'user_id': user_doc.get('user_id') or str(user_doc.get('_id')),
+        'profile': profile,
+        'skills': skills,
+        'objectives': objectives,
+        # Agregar otros campos según tu estructura
+    }
+
+def _rebuild_features(self):
+    """
+    Reconstruye features_list y feature_matrix desde user_data
+    Usado después de sincronización masiva
+    """
+    print("🔨 Reconstruyendo features desde user_data...")
+    
+    if self.user_data is None or len(self.user_data) == 0:
+        print("⚠️ No hay datos de usuarios para reconstruir features")
+        self.features_list = []
+        self.feature_matrix = None
+        return
+    
+    try:
+        # Convertir user_data a formato lista de diccionarios
+        users_list = self.user_data.to_dict('records')
+        
+        # Usar el preprocessor para extraer features (como en train_model)
+        self.features_list, _ = self.preprocessor.extract_user_features(users_list)
+        
+        # Crear matriz de features
+        self.feature_matrix = self.preprocessor.create_feature_matrix(self.features_list)
+        
+        print(f"✅ Features reconstruidas: {len(self.features_list)} usuarios")
+        print(f"   Dimensiones matriz: {self.feature_matrix.shape}")
+        
+    except Exception as e:
+        print(f"❌ Error reconstruyendo features: {e}")
+        raise
+
+def _rebuild_knn_model(self):
+    """
+    Reconstruye el modelo KNN desde feature_matrix actual
+    Usado después de sincronización masiva
+    """
+    print("🔨 Reconstruyendo modelo KNN...")
+    
+    if self.feature_matrix is None or len(self.features_list) == 0:
+        print("⚠️ No hay features para construir el modelo")
+        self.model_trained = False
+        return
+    
+    try:
+        # Calcular K óptimo
+        optimal_k = min(
+            settings.OPTIMAL_K_NEIGHBORS,
+            max(3, len(self.features_list) - 1)
+        )
+        
+        # Crear y entrenar modelo KNN
+        self.knn_model = NearestNeighbors(
+            n_neighbors=optimal_k,
+            metric=settings.KNN_METRIC,
+            algorithm=settings.KNN_ALGORITHM
+        )
+        
+        self.knn_model.fit(self.feature_matrix)
+        self.model_trained = True
+        
+        print(f"✅ Modelo KNN reconstruido:")
+        print(f"   K vecinos: {optimal_k}")
+        print(f"   Total usuarios: {len(self.features_list)}")
+        print(f"   Dimensiones: {self.feature_matrix.shape}")
+        
+    except Exception as e:
+        print(f"❌ Error reconstruyendo modelo KNN: {e}")
+        self.model_trained = False
+        raise
+
+def _reload_single_user(self, user_id: str):
+    """
+    Recarga un usuario específico desde MongoDB
+    Usado en el endpoint /users/sync
+    """
+    from bson import ObjectId
+    
+    # Conectar a la base de datos
+    self.db_manager.connect()
+    
+    try:
+        # Buscar usuario en MongoDB
+        user_doc = self.db_manager.collection.find_one({"_id": ObjectId(user_id)})
+        
+        if not user_doc:
+            raise ValueError(f"Usuario {user_id} no encontrado en MongoDB")
+        
+        # Convertir a formato DataFrame
+        user_row = self._convert_mongo_doc_to_dataframe_row(user_doc)
+        
+        # Agregar al DataFrame
+        self.user_data = pd.concat(
+            [self.user_data, pd.DataFrame([user_row])], 
+            ignore_index=True
+        )
+        
+        print(f"✅ Usuario {user_id} recargado exitosamente")
+        
+        # Reconstruir features y modelo
+        self._rebuild_features()
+        self._rebuild_knn_model()
+        
+    except Exception as e:
+        print(f"❌ Error recargando usuario {user_id}: {e}")
+        raise
+    finally:
+        self.db_manager.close()
