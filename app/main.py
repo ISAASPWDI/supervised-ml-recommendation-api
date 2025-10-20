@@ -10,7 +10,7 @@ from .models.schemas import (
     HealthResponse, ModelStatsResponse, UserSyncRequest
 )
 from .config.settings import settings
-from .config.database import DatabaseManager  # 👈 IMPORTAR DatabaseManager
+from .utils.database import DatabaseManager  # 👈 IMPORTAR DatabaseManager
 # Si no funciona, prueba una de estas alternativas:
 # from app.config.database import DatabaseManager
 # from config.database import DatabaseManager
