@@ -10,7 +10,7 @@ from .models.schemas import (
     HealthResponse, ModelStatsResponse, UserSyncRequest
 )
 from .config.settings import settings
-from .utils.database import DatabaseManager  # 👈 IMPORTAR DatabaseManager
+from .config.database import DatabaseManager  # 👈 IMPORTAR DatabaseManager
 # Si no funciona, prueba una de estas alternativas:
 # from app.config.database import DatabaseManager
 # from config.database import DatabaseManager
@@ -178,8 +178,18 @@ async def check_user_exists(user_id: str):
     """
     Verifica si un usuario existe en el sistema de ML
     """
+    print(f"🔍 Buscando usuario: {user_id}")
+    print(f"   Total usuarios en sistema: {len(matcher.user_data)}")
+    
+    # Debug: mostrar primeros 3 user_ids
+    if len(matcher.user_data) > 0:
+        sample_ids = matcher.user_data['user_id'].head(3).tolist()
+        print(f"   Ejemplo de IDs en sistema: {sample_ids}")
+    
     user_mask = matcher.user_data['user_id'] == user_id
     exists = user_mask.any()
+    
+    print(f"   Encontrado: {exists}")
     
     if exists:
         user_idx = matcher.user_data[user_mask].index[0]
@@ -198,7 +208,12 @@ async def check_user_exists(user_id: str):
     return {
         "exists": False,
         "user_id": user_id,
-        "message": "Usuario no encontrado en el sistema de ML"
+        "message": "Usuario no encontrado en el sistema de ML",
+        "debug": {
+            "searched_id": user_id,
+            "total_users": len(matcher.user_data),
+            "sample_ids": matcher.user_data['user_id'].head(3).tolist() if len(matcher.user_data) > 0 else []
+        }
     }
 
 @app.post("/retrain")
