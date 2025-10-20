@@ -10,6 +10,7 @@ from .models.schemas import (
     HealthResponse, ModelStatsResponse, UserSyncRequest
 )
 from .config.settings import settings
+from .utils.database import DatabaseManager
 
 # Crear instancia de FastAPI
 app = FastAPI(
@@ -27,8 +28,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Instancia global del matcher
+# Instancias globales
 matcher = AcademicMatcher()
+db_manager = DatabaseManager()  # 👈 CREAR INSTANCIA
 
 @app.on_event("startup")
 async def startup_event():
@@ -51,11 +53,12 @@ async def get_recommendations(request: RecommendationRequest):
     )
     
     return RecommendationResponse(
-        recommendations=result["recommendations"],  # lista de recomendaciones
-        total_filtered=result["total_filtered"],    # número total
+        recommendations=result["recommendations"],
+        total_filtered=result["total_filtered"],
         model_version=settings.API_VERSION,
         generated_at=datetime.now().isoformat()
     )
+
 @app.post("/users/sync")
 async def sync_user(request: UserSyncRequest):
     """
@@ -107,12 +110,9 @@ async def sync_all_users():
     try:
         print("🔄 Iniciando sincronización masiva...")
         
-        # Obtener todos los usuarios de MongoDB
-        from bson import ObjectId
-        users_cursor = matcher.db['users'].find({
-            "profile": {"$exists": True},  # Solo usuarios con perfil completo
-            "activity.isActive": True  # Solo usuarios activos
-        })
+        # 👇 USAR DatabaseManager en lugar de matcher.db
+        db_manager.connect()
+        users_docs = db_manager.get_active_users()
         
         synced = 0
         failed = 0
@@ -121,9 +121,9 @@ async def sync_all_users():
         matcher.user_data = pd.DataFrame()
         matcher.features_list = []
         
-        for user_doc in users_cursor:
+        for user_doc in users_docs:
             try:
-                user_id = str(user_doc['_id'])
+                user_id = user_doc.get('user_id') or str(user_doc['_id'])
                 user_row = matcher._convert_mongo_doc_to_dataframe_row(user_doc)
                 
                 # Agregar al DataFrame
@@ -163,6 +163,8 @@ async def sync_all_users():
             status_code=500, 
             detail=f"Error en sincronización: {str(e)}"
         )
+    finally:
+        db_manager.close()  # 👈 CERRAR CONEXIÓN
 
 
 @app.get("/users/{user_id}/exists")
@@ -232,9 +234,10 @@ async def root():
         "model_trained": health_data["model_trained"],
         "documentation": "/docs"
     }
+
 @app.get("/model/validation")
 async def validate_model():
-    """Endpoint para obtener métricas de validación (tu matriz)"""
+    """Endpoint para obtener métricas de validación"""
     metrics = matcher.calculate_validation_metrics()
     return {
         "validation_metrics": metrics,
