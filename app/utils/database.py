@@ -23,12 +23,7 @@ class DatabaseManager:
         Obtiene usuarios activos con SOLO LOS CAMPOS NECESARIOS
         ✅ ELIMINADOS: skills.level, commitmentLevel, preferences, activity, privacy
         """
-<<<<<<< HEAD
-        # ❌ ANTES: if not self.collection:
-        # ✅ AHORA: comparar con None
-=======
         # 🔥 FIX: Cambiar "if not self.collection:" por "if self.collection is None:"
->>>>>>> de79160 (new changes improving the model score, includes pagination, retrain model, new apis for pagination, metrics and retrains)
         if self.collection is None:
             self.connect()
         
@@ -68,19 +63,13 @@ class DatabaseManager:
         
         except Exception as e:
             print(f"❌ Error obteniendo usuarios: {e}")
-<<<<<<< HEAD
-=======
             import traceback
             traceback.print_exc()
->>>>>>> de79160 (new changes improving the model score, includes pagination, retrain model, new apis for pagination, metrics and retrains)
             raise HTTPException(status_code=500, detail=str(e))
     
     def get_user_activity_stats(self):
         """Estadísticas básicas de usuarios"""
-<<<<<<< HEAD
-=======
         # 🔥 FIX: Cambiar "if not self.collection:" por "if self.collection is None:"
->>>>>>> de79160 (new changes improving the model score, includes pagination, retrain model, new apis for pagination, metrics and retrains)
         if self.collection is None:
             self.connect()
             
@@ -118,9 +107,4 @@ class DatabaseManager:
     def close(self):
         """Cierra la conexión a MongoDB"""
         if self.client is not None:
-<<<<<<< HEAD
             self.client.close()
-            print("🔌 Conexión a MongoDB cerrada")
-=======
-            self.client.close()
->>>>>>> de79160 (new changes improving the model score, includes pagination, retrain model, new apis for pagination, metrics and retrains)

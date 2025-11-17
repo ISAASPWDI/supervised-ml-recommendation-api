@@ -13,10 +13,7 @@ from .models.schemas import (
     HealthResponse, ModelStatsResponse, PaginationMetadata
 )
 from .config.settings import settings
-from .utils.database import DatabaseManager  # 👈 IMPORTAR DatabaseManager
-# Si no funciona, prueba una de estas alternativas:
-# from app.config.database import DatabaseManager
-# from config.database import DatabaseManager
+from .utils.database import DatabaseManager
 
 app = FastAPI(
     title=settings.API_TITLE,
