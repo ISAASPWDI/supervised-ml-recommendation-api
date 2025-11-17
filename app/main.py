@@ -1,13 +1,16 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
+from typing import Optional
+import asyncio
+from threading import Lock
 
 import pandas as pd
 
 from .models.matcher import AcademicMatcher
 from .models.schemas import (
-    BulkSyncResponse, RecommendationRequest, RecommendationResponse, 
-    HealthResponse, ModelStatsResponse, UserSyncRequest
+    CacheClearRequest, CacheClearResponse, RecommendationRequest, RecommendationResponse, 
+    HealthResponse, ModelStatsResponse, PaginationMetadata
 )
 from .config.settings import settings
 from .utils.database import DatabaseManager  # 👈 IMPORTAR DatabaseManager
@@ -15,14 +18,12 @@ from .utils.database import DatabaseManager  # 👈 IMPORTAR DatabaseManager
 # from app.config.database import DatabaseManager
 # from config.database import DatabaseManager
 
-# Crear instancia de FastAPI
 app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION,
     description="Servicio de Machine Learning para recomendaciones académicas"
 )
 
-# Configurar CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -31,196 +32,189 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Instancias globales
 matcher = AcademicMatcher()
-db_manager = DatabaseManager()  # 👈 CREAR INSTANCIA
+needs_retraining = False
+is_retraining = False
+retrain_lock = Lock()
 
 @app.on_event("startup")
 async def startup_event():
-    """Se ejecuta cuando inicia el servicio - ENTRENA AUTOMÁTICAMENTE"""
+    """Se ejecuta cuando inicia el servicio"""
     print("🚀 Iniciando servicio de ML...")
     try:
         result = matcher.train_model()
         print(f"✅ Modelo entrenado en startup: {result}")
     except Exception as e:
         print(f"⚠️ Error al entrenar modelo en startup: {e}")
-        print("El modelo se puede entrenar manualmente con POST /retrain")
+
+def retrain_in_background():
+    """Re-entrena el modelo en segundo plano"""
+    global needs_retraining, is_retraining
+    
+    with retrain_lock:
+        if is_retraining:
+            print("⚠️ Re-entrenamiento ya en proceso, saltando...")
+            return
+        is_retraining = True
+    
+    try:
+        print("🔄 Re-entrenando modelo en segundo plano...")
+        result = matcher.train_model()
+        needs_retraining = False
+        print(f"✅ Modelo re-entrenado: {result['users_processed']} usuarios")
+    except Exception as e:
+        print(f"❌ Error re-entrenando: {e}")
+        import traceback
+        traceback.print_exc()
+        needs_retraining = True
+    finally:
+        is_retraining = False
+
+@app.post("/webhook/user-updated")
+async def user_updated_webhook(
+    x_api_key: Optional[str] = Header(None)
+):
+    """
+    🔔 WEBHOOK llamado desde NestJS cuando se actualiza un usuario
+    RE-ENTRENA DE FORMA SÍNCRONA para garantizar datos actualizados
+    
+    Headers opcionales:
+    - x-api-key: Token de autenticación
+    """
+    global needs_retraining
+    
+    if settings.WEBHOOK_API_KEY and x_api_key != settings.WEBHOOK_API_KEY:
+        return {"error": "Unauthorized"}, 401
+    
+    print(f"📥 Webhook recibido - RE-ENTRENANDO SÍNCRONAMENTE")
+    
+    # 🔥 SIEMPRE re-entrenar de forma síncrona
+    try:
+        print("⏳ Iniciando re-entrenamiento síncrono...")
+        result = matcher.train_model()
+        needs_retraining = False
+        print(f"✅ Modelo re-entrenado: {result['users_processed']} usuarios")
+        
+        return {
+            "message": "Model retrained successfully",
+            "status": "completed",
+            "users_processed": result['users_processed'],
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        print(f"❌ Error re-entrenando: {e}")
+        import traceback
+        traceback.print_exc()
+        needs_retraining = True
+        
+        return {
+            "message": "Model retraining failed",
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
 
 @app.post("/recommendations", response_model=RecommendationResponse)
-async def get_recommendations(request: RecommendationRequest):
-    """Endpoint principal para obtener recomendaciones"""
+async def get_recommendations(
+    request: RecommendationRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Endpoint principal con paginación
+    
+    - **user_id**: ID del usuario solicitante
+    - **exclude_users**: Lista de usuarios ya swipeados (opcional)
+    - **limit**: Resultados por página (1-50, default: 10)
+    - **page**: Número de página (1-indexed, default: 1)
+    - **use_cache**: Usar cache de recomendaciones (default: true)
+    """
+    global needs_retraining, is_retraining
+    
+    print(f"📥 Request de recomendaciones:")
+    print(f"   Usuario: {request.user_id}")
+    print(f"   Página: {request.page}, Límite: {request.limit}")
+    print(f"   Excluidos: {len(request.exclude_users)}")
+    print(f"   needs_retraining={needs_retraining}, is_retraining={is_retraining}")
+    
+    # Si hay cambios pendientes, ESPERAR a que termine el re-entrenamiento
+    if needs_retraining or is_retraining:
+        print("⏳ Esperando a que termine el re-entrenamiento actual...")
+        
+        max_wait = 30
+        waited = 0
+        while (needs_retraining or is_retraining) and waited < max_wait:
+            await asyncio.sleep(0.5)
+            waited += 0.5
+        
+        if waited >= max_wait:
+            print("⚠️ Timeout esperando re-entrenamiento, usando modelo actual")
+        else:
+            print(f"✅ Re-entrenamiento completado después de {waited}s")
+    
+    # Si aún hay flag de re-entrenamiento, forzar uno síncrono
+    if needs_retraining:
+        print("🔄 Forzando re-entrenamiento síncrono antes de recomendar...")
+        try:
+            matcher.train_model()
+            needs_retraining = False
+            print("✅ Modelo actualizado antes de recomendar")
+        except Exception as e:
+            print(f"❌ Error re-entrenando: {e}")
+    
     result = matcher.get_recommendations(
         user_id=request.user_id,
         exclude_users=request.exclude_users,
-        limit=request.limit
+        limit=request.limit,
+        page=request.page,
+        use_cache=request.use_cache
     )
     
     return RecommendationResponse(
         recommendations=result["recommendations"],
-        total_filtered=result["total_filtered"],
+        pagination=PaginationMetadata(**result["pagination"]),
+        compatibility_metrics=result["compatibility_metrics"],
         model_version=settings.API_VERSION,
-        generated_at=datetime.now().isoformat()
+        generated_at=datetime.now().isoformat(),
+        cache_used=result.get("cache_used", False)
     )
 
-@app.post("/users/sync")
-async def sync_user(request: UserSyncRequest):
+@app.post("/cache/clear", response_model=CacheClearResponse)
+async def clear_cache(request: CacheClearRequest):
     """
-    Sincroniza un usuario específico desde MongoDB al sistema de ML
+    Limpia el cache de recomendaciones
+    
+    - Sin user_id: limpia todo el cache
+    - Con user_id: limpia solo cache de ese usuario
     """
     try:
-        print(f"🔄 Sincronizando usuario {request.user_id}...")
+        cache_size_before = len(matcher._recommendation_cache)
         
-        # Verificar si ya existe
-        user_mask = matcher.user_data['user_id'] == request.user_id
-        exists = user_mask.any()
+        matcher.clear_cache(request.user_id)
         
-        if exists and not request.force_reload:
-            return {
-                "success": True,
-                "message": f"Usuario {request.user_id} ya existe en el sistema",
-                "action": "skipped"
-            }
+        cache_size_after = len(matcher._recommendation_cache)
+        cleared = cache_size_before - cache_size_after
         
-        # Recargar usuario
-        if exists:
-            # Eliminar usuario existente primero
-            matcher.user_data = matcher.user_data[~user_mask]
-            print(f"   Usuario existente eliminado, recargando...")
+        message = f"Cache limpiado para {request.user_id}" if request.user_id else "Cache completo limpiado"
         
-        # Cargar desde MongoDB
-        matcher._reload_single_user(request.user_id)
-        
-        return {
-            "success": True,
-            "message": f"Usuario {request.user_id} sincronizado exitosamente",
-            "action": "reloaded" if exists else "added",
-            "total_users": len(matcher.user_data)
-        }
-        
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Error sincronizando: {str(e)}")
-
-
-@app.post("/users/sync-all", response_model=BulkSyncResponse)
-async def sync_all_users():
-    """
-    Recarga TODOS los usuarios desde MongoDB
-    Útil después de migraciones o cambios masivos
-    """
-    try:
-        print("🔄 Iniciando sincronización masiva...")
-        
-        # 👇 USAR DatabaseManager en lugar de matcher.db
-        db_manager.connect()
-        users_docs = db_manager.get_active_users()
-        
-        synced = 0
-        failed = 0
-        
-        # Limpiar DataFrame actual
-        matcher.user_data = pd.DataFrame()
-        matcher.features_list = []
-        
-        for user_doc in users_docs:
-            try:
-                user_id = user_doc.get('user_id') or str(user_doc.get('_id', ''))
-                
-                # El user_doc ya viene en el formato correcto desde get_active_users()
-                # No necesitamos convertir, solo agregarlo directamente
-                user_row = user_doc
-                
-                # Agregar al DataFrame
-                matcher.user_data = pd.concat(
-                    [matcher.user_data, pd.DataFrame([user_row])], 
-                    ignore_index=True
-                )
-                
-                synced += 1
-                
-                if synced % 10 == 0:
-                    print(f"   Procesados: {synced} usuarios...")
-                
-            except Exception as e:
-                print(f"❌ Error procesando usuario {user_id}: {e}")
-                failed += 1
-        
-        # Reconstruir features y modelo
-        print("🔨 Reconstruyendo features y modelo KNN...")
-        matcher._rebuild_features()
-        matcher._rebuild_knn_model()
-        
-        print(f"✅ Sincronización completa:")
-        print(f"   Sincronizados: {synced}")
-        print(f"   Fallidos: {failed}")
-        
-        return BulkSyncResponse(
-            success=True,
-            users_synced=synced,
-            users_failed=failed,
-            message=f"Sincronización masiva completada. {synced} usuarios cargados."
+        return CacheClearResponse(
+            status="success",
+            message=message,
+            cleared_entries=cleared
         )
-        
     except Exception as e:
-        print(f"❌ Error en sincronización masiva: {e}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Error en sincronización: {str(e)}"
-        )
-    finally:
-        db_manager.close()  # 👈 CERRAR CONEXIÓN
-
-
-@app.get("/users/{user_id}/exists")
-async def check_user_exists(user_id: str):
-    """
-    Verifica si un usuario existe en el sistema de ML
-    """
-    print(f"🔍 Buscando usuario: {user_id}")
-    print(f"   Total usuarios en sistema: {len(matcher.user_data)}")
+        raise HTTPException(status_code=500, detail=f"Error limpiando cache: {str(e)}")
     
-    # Debug: mostrar primeros 3 user_ids
-    if len(matcher.user_data) > 0:
-        sample_ids = matcher.user_data['user_id'].head(3).tolist()
-        print(f"   Ejemplo de IDs en sistema: {sample_ids}")
-    
-    user_mask = matcher.user_data['user_id'] == user_id
-    exists = user_mask.any()
-    
-    print(f"   Encontrado: {exists}")
-    
-    if exists:
-        user_idx = matcher.user_data[user_mask].index[0]
-        user_info = matcher.features_list[user_idx]
-        
-        return {
-            "exists": True,
-            "user_id": user_id,
-            "data": {
-                "university": user_info.get('university'),
-                "semester": user_info.get('semester'),
-                "age": user_info.get('age'),
-            }
-        }
-    
-    return {
-        "exists": False,
-        "user_id": user_id,
-        "message": "Usuario no encontrado en el sistema de ML",
-        "debug": {
-            "searched_id": user_id,
-            "total_users": len(matcher.user_data),
-            "sample_ids": matcher.user_data['user_id'].head(3).tolist() if len(matcher.user_data) > 0 else []
-        }
-    }
-
 @app.post("/retrain")
 async def retrain_model():
-    """Endpoint para re-entrenar el modelo manualmente"""
+    """Re-entrena el modelo manualmente"""
+    global needs_retraining
     result = matcher.train_model()
-    return {"message": "Modelo re-entrenado exitosamente", "details": result}
+    needs_retraining = False
+    return {
+        "message": "Modelo re-entrenado exitosamente",
+        "details": result,
+        "timestamp": datetime.now().isoformat()
+    }
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -243,6 +237,11 @@ async def model_stats():
         k_neighbors=stats["k_neighbors"],
         last_trained=datetime.now().isoformat()
     )
+@app.post("/test-webhook")
+async def test_webhook():
+    """Endpoint de prueba"""
+    print("🧪 TEST WEBHOOK EJECUTADO")
+    return {"message": "Test successful", "timestamp": datetime.now().isoformat()}
 
 @app.get("/")
 async def root():
@@ -253,18 +252,8 @@ async def root():
         "version": settings.API_VERSION,
         "status": "running",
         "model_trained": health_data["model_trained"],
+        "needs_retraining": needs_retraining,
+        "is_retraining": is_retraining,
+        "users_loaded": health_data["users_loaded"],
         "documentation": "/docs"
-    }
-
-@app.get("/model/validation")
-async def validate_model():
-    """Endpoint para obtener métricas de validación"""
-    metrics = matcher.calculate_validation_metrics()
-    return {
-        "validation_metrics": metrics,
-        "interpretation": {
-            "accuracy_status": "PASS" if metrics['accuracy'] >= 0.80 else "FAIL",
-            "precision_status": "PASS" if metrics['precision'] >= 0.75 else "FAIL",
-            "recall_status": "PASS" if metrics['recall'] >= 0.70 else "FAIL"
-        }
     }

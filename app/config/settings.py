@@ -2,7 +2,6 @@ import os
 from dotenv import load_dotenv
 from ast import literal_eval
 
-# Cargar variables del archivo .env
 load_dotenv()
 
 class Settings:
@@ -17,8 +16,10 @@ class Settings:
     API_TITLE = "Academic Match ML Service"
     API_VERSION = "2.0.0"
 
+    # 🔐 Webhook Security
+    WEBHOOK_API_KEY = os.getenv("WEBHOOK_API_KEY")  # Opcional, para validar requests del backend
+
     # 🌐 CORS
-    # Soporta lista desde .env, por ejemplo: CORS_ORIGINS=["https://studysync.onrender.com", "http://localhost:3000"]
     try:
         CORS_ORIGINS = literal_eval(os.getenv("CORS_ORIGINS", "['http://localhost:3000']"))
     except Exception:
@@ -65,6 +66,4 @@ class Settings:
         'commitment': float(os.getenv("WEIGHT_COMMITMENT", 0.05)),
     }
 
-
-# Instancia global
 settings = Settings()

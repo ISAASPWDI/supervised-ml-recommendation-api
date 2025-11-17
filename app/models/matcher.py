@@ -10,7 +10,6 @@ from ..utils.preprocessing import FeaturePreprocessor
 from ..config.settings import settings
 
 class AcademicMatcher:
-    """Matcher optimizado - ENFOQUE PRINCIPAL EN SEMESTRE"""
     
     def __init__(self):
         self.knn_model = None
@@ -20,9 +19,9 @@ class AcademicMatcher:
         self.feature_matrix = None
         self.model_trained = False
         self.features_list = None
+        self._recommendation_cache = {}
     
     def train_model(self):
-        """Entrena con K=3 (óptimo según tu análisis)"""
         try:
             print("🚀 Iniciando entrenamiento del modelo KNN...")
             
@@ -50,6 +49,8 @@ class AcademicMatcher:
             self.knn_model.fit(self.feature_matrix)
             self.model_trained = True
             
+            self._recommendation_cache.clear()
+            
             result = {
                 "status": "success",
                 "users_processed": user_count,
@@ -66,7 +67,6 @@ class AcademicMatcher:
             raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
     
     def _generate_smart_preferences(self, user_info: Dict) -> Dict:
-        """Genera preferencias automáticas - DISTANCIA MUY AMPLIA"""
         user_age = user_info.get('age', 21)
         user_semester = user_info.get('semester', 5)
         
@@ -75,145 +75,90 @@ class AcademicMatcher:
             'age_max': min(50, user_age + 3),
             'semester_min': max(1, user_semester - 2),
             'semester_max': min(12, user_semester + 2),
-            'max_distance': 500  # 500 km - MUY AMPLIO, prácticamente sin restricción
+            'max_distance': 500
         }
     
-    def get_recommendations(self, user_id: str, exclude_users: List[str] = [], limit: int = None):
-        """Recomendaciones con ENFOQUE EN SEMESTRE (sin filtrar por edad)"""
+    def get_recommendations(
+        self, 
+        user_id: str, 
+        exclude_users: List[str] = [], 
+        limit: int = None,
+        page: int = 1,
+        use_cache: bool = True
+    ):
         if not self.model_trained:
             raise HTTPException(status_code=400, detail="Modelo no entrenado")
         
         if limit is None:
             limit = settings.DEFAULT_RECOMMENDATION_LIMIT
         
+        if page < 1:
+            raise HTTPException(status_code=400, detail="page debe ser >= 1")
+        
         try:
-            # 1. Encontrar usuario
             user_mask = self.user_data['user_id'] == user_id
             if not user_mask.any():
                 raise HTTPException(status_code=404, detail=f"Usuario {user_id} no encontrado")
             
             user_idx = self.user_data[user_mask].index[0]
-            user_features = self.feature_matrix[user_idx].reshape(1, -1)
+            
+            cache_key = f"{user_id}:{','.join(sorted(exclude_users))}"
+            
+            if use_cache and cache_key in self._recommendation_cache:
+                print(f"✅ Usando cache para {user_id}")
+                all_recommendations = self._recommendation_cache[cache_key]
+            else:
+                all_recommendations = self._generate_all_recommendations(
+                    user_id, user_idx, exclude_users
+                )
+                
+                if use_cache:
+                    self._recommendation_cache[cache_key] = all_recommendations
+            
+            total_results = len(all_recommendations)
+            start_idx = (page - 1) * limit
+            end_idx = start_idx + limit
+            
+            if start_idx >= total_results and total_results > 0:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"page {page} fuera de rango (total: {total_results}, límite: {limit})"
+                )
+            
+            paginated_recommendations = all_recommendations[start_idx:end_idx]
+            
+            total_pages = (total_results + limit - 1) // limit
+            has_next = end_idx < total_results
+            has_prev = page > 1
+            
             user_info = self.features_list[user_idx]
-            
-            # Generar preferencias automáticas
             user_prefs = self._generate_smart_preferences(user_info)
-            
-            print(f"\n{'='*70}")
-            print(f"👤 Usuario: {user_id}")
-            print(f"   Edad: {user_info['age']} (ya no se filtra por edad)")
-            print(f"   Semestre: {user_info['semester']} → Rango: {user_prefs['semester_min']}-{user_prefs['semester_max']}")
-            print(f"   📍 Distancia máxima: {user_prefs['max_distance']} km (sin restricción práctica)")
-            print(f"{'='*70}\n")
-            
-            # 2. KNN búsqueda
-            search_k = min(
-                len(self.user_data) - 1,
-                limit * 3
+            compatibility_metrics = self._calculate_compatibility_metrics(
+                paginated_recommendations, user_info
             )
             
-            if search_k > self.knn_model.n_neighbors:
-                temp_knn = NearestNeighbors(
-                    n_neighbors=search_k,
-                    metric=settings.KNN_METRIC,
-                    algorithm=settings.KNN_ALGORITHM
-                )
-                temp_knn.fit(self.feature_matrix)
-                distances, indices = temp_knn.kneighbors(user_features)
-            else:
-                distances, indices = self.knn_model.kneighbors(user_features)
-            
-            print(f"🔍 KNN encontró {len(indices[0])} vecinos cercanos\n")
-            
-            # 3. Filtrar candidatos - SOLO SEMESTRE y EXCLUSIONES
-            recommendations = []
-            filtered_counts = {
-                'excluded': 0,
-                'semester': 0,
-                'distance': 0,
-                'accepted': 0
-            }
-            
-            for i, (distance, idx) in enumerate(zip(distances[0], indices[0])):
-                if i == 0:  # Saltar el mismo usuario
-                    continue
-                
-                candidate_id = self.user_data.iloc[idx]['user_id']
-                candidate_info = self.features_list[idx]
-                candidate_data = self.user_data.iloc[idx]
-                
-                print(f"[{i}] Evaluando: {candidate_id}")
-                
-                # FILTRO 1: Excluidos
-                if candidate_id in exclude_users:
-                    print(f"    ❌ EXCLUIDO manualmente")
-                    filtered_counts['excluded'] += 1
-                    continue
-                
-                # FILTRO 2: SEMESTRE (FILTRO PRINCIPAL)
-                semester_diff = abs(user_info['semester'] - candidate_info['semester'])
-                if semester_diff > settings.MAX_SEMESTER_DIFFERENCE:
-                    print(f"    ❌ SEMESTRE: diff={semester_diff} > {settings.MAX_SEMESTER_DIFFERENCE} (candidato: {candidate_info['semester']})")
-                    filtered_counts['semester'] += 1
-                    continue
-                print(f"    ✓ Semestre OK (diff: {semester_diff}) ⭐ CRITERIO PRINCIPAL")
-                
-                # 🔹 EDAD - Solo informativo
-                candidate_age = candidate_info['age']
-                print(f"    ℹ️ Edad del candidato: {candidate_age} (no se usa como filtro)")
-                
-                # FILTRO 3: Semestre (rango de preferencias)
-                candidate_semester = candidate_info['semester']
-                if not (user_prefs['semester_min'] <= candidate_semester <= user_prefs['semester_max']):
-                    print(f"    ❌ SEMESTRE RANGO: {candidate_semester} fuera de [{user_prefs['semester_min']}, {user_prefs['semester_max']}]")
-                    filtered_counts['semester'] += 1
-                    continue
-                print(f"    ✓ Semestre rango OK ({candidate_semester})")
-                
-                # DISTANCIA: Solo informativo
-                distance_km = self._calculate_distance(user_info, candidate_info)
-                print(f"    ℹ️  Distancia: {distance_km:.1f} km (informativo, no filtra)")
-                
-                # Score con BONUS ALTO por semestre
-                base_similarity = max(0, 1 - distance)
-                semester_bonus = 0
-                if semester_diff == 0:
-                    semester_bonus = 0.20
-                elif semester_diff == 1:
-                    semester_bonus = 0.15
-                
-                final_score = min(1.0, base_similarity + semester_bonus)
-                
-                recommendation = self._build_recommendation(
-                    candidate_id, final_score, candidate_data, 
-                    user_idx, idx, semester_diff, distance_km
-                )
-                recommendations.append(recommendation)
-                filtered_counts['accepted'] += 1
-                print(f"    ✅ ACEPTADO - Score: {final_score:.3f}\n")
-                
-                if len(recommendations) >= limit:
-                    break
-            
-            # Resumen
             print(f"\n{'='*70}")
-            print(f"📊 RESUMEN DE FILTRADO:")
-            print(f"   Total evaluados: {len(indices[0]) - 1}")
-            print(f"   Excluidos manualmente: {filtered_counts['excluded']}")
-            print(f"   ❌ Rechazados por SEMESTRE: {filtered_counts['semester']}")
-            print(f"   📍 Distancia y edad NO utilizadas como filtro")
-            print(f"   ✅ ACEPTADOS: {filtered_counts['accepted']}")
+            print(f"📄 PAGINACIÓN:")
+            print(f"   Página: {page}/{total_pages}")
+            print(f"   Resultados: {len(paginated_recommendations)}/{total_results}")
+            print(f"   Rango: {start_idx + 1}-{min(end_idx, total_results)}")
             print(f"{'='*70}\n")
             
-            compatibility_metrics = self._calculate_compatibility_metrics(recommendations, user_info)
-            
             return {
-                "recommendations": recommendations,
+                "recommendations": paginated_recommendations,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total": total_results,
+                    "total_pages": total_pages,
+                    "has_next": has_next,
+                    "has_prev": has_prev,
+                    "showing": len(paginated_recommendations)
+                },
                 "compatibility_metrics": compatibility_metrics,
-                "total_filtered": len(recommendations),
                 "user_preferences_applied": user_prefs,
-                "debug_filters": filtered_counts,
-                "filter_priority": "SEMESTRE (principal) > Distancia (informativo)"
+                "filter_priority": "Semestre (principal) + Skills + Objectives",
+                "cache_used": use_cache and cache_key in self._recommendation_cache
             }
             
         except HTTPException:
@@ -223,10 +168,103 @@ class AcademicMatcher:
             import traceback
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
+    
+    def _generate_all_recommendations(
+        self, 
+        user_id: str, 
+        user_idx: int, 
+        exclude_users: List[str]
+    ) -> List[Dict]:
+        user_features = self.feature_matrix[user_idx].reshape(1, -1)
+        user_info = self.features_list[user_idx]
+        user_prefs = self._generate_smart_preferences(user_info)
+        
+        print(f"\n{'='*70}")
+        print(f"👤 Generando cache de recomendaciones para: {user_id}")
+        print(f"   Edad: {user_info['age']}")
+        print(f"   Semestre: {user_info['semester']} → Rango: {user_prefs['semester_min']}-{user_prefs['semester_max']}")
+        print(f"   📍 Distancia máxima: {user_prefs['max_distance']} km")
+        print(f"{'='*70}\n")
+        
+        search_k = min(
+            len(self.user_data) - 1,
+            100
+        )
+        
+        if search_k > self.knn_model.n_neighbors:
+            temp_knn = NearestNeighbors(
+                n_neighbors=search_k,
+                metric=settings.KNN_METRIC,
+                algorithm=settings.KNN_ALGORITHM
+            )
+            temp_knn.fit(self.feature_matrix)
+            distances, indices = temp_knn.kneighbors(user_features)
+            print(f"🔍 KNN extendido: {search_k} vecinos")
+        else:
+            distances, indices = self.knn_model.kneighbors(user_features)
+            print(f"🔍 KNN base: {len(indices[0])} vecinos")
+        
+        recommendations = []
+        filtered_counts = {
+            'excluded': 0,
+            'semester': 0,
+            'accepted': 0
+        }
+        
+        for i, (distance, idx) in enumerate(zip(distances[0], indices[0])):
+            if i == 0:
+                continue
+            
+            candidate_id = self.user_data.iloc[idx]['user_id']
+            
+            if candidate_id in exclude_users:
+                filtered_counts['excluded'] += 1
+                continue
+            
+            candidate_info = self.features_list[idx]
+            candidate_data = self.user_data.iloc[idx]
+            
+            semester_diff = abs(user_info['semester'] - candidate_info['semester'])
+            
+            if semester_diff > settings.MAX_SEMESTER_DIFFERENCE:
+                filtered_counts['semester'] += 1
+                continue
+            
+            candidate_semester = candidate_info['semester']
+            if not (user_prefs['semester_min'] <= candidate_semester <= user_prefs['semester_max']):
+                filtered_counts['semester'] += 1
+                continue
+            
+            distance_km = self._calculate_distance(user_info, candidate_info)
+            
+            base_similarity = max(0, 1 - distance)
+            
+            semester_bonus = 0
+            if semester_diff == 0:
+                semester_bonus = 0.20
+            elif semester_diff == 1:
+                semester_bonus = 0.15
+            
+            final_score = min(1.0, base_similarity + semester_bonus)
+            
+            recommendation = self._build_recommendation(
+                candidate_id, final_score, candidate_data, 
+                user_idx, idx, semester_diff, distance_km
+            )
+            recommendations.append(recommendation)
+            filtered_counts['accepted'] += 1
+        
+        print(f"\n{'='*70}")
+        print(f"📊 RESUMEN DE FILTRADO:")
+        print(f"   Total evaluados: {len(indices[0]) - 1}")
+        print(f"   Excluidos: {filtered_counts['excluded']}")
+        print(f"   Rechazados por semestre: {filtered_counts['semester']}")
+        print(f"   ✅ ACEPTADOS: {filtered_counts['accepted']}")
+        print(f"{'='*70}\n")
+        
+        return recommendations
     
     def _calculate_distance(self, user_info, candidate_info):
-        """Calcula distancia solo para información"""
         try:
             user_coords = user_info.get('location', settings.DEFAULT_COORDINATES)
             candidate_coords = candidate_info.get('location', settings.DEFAULT_COORDINATES)
@@ -240,10 +278,16 @@ class AcademicMatcher:
         except:
             return 0.0
     
-    def _build_recommendation(self, candidate_id: str, similarity_score: float, 
-                            candidate_data, user_idx: int, candidate_idx: int,
-                            semester_diff: int, distance_km: float = None) -> Dict:
-        """Construye recomendación con información de distancia"""
+    def _build_recommendation(
+        self, 
+        candidate_id: str, 
+        similarity_score: float, 
+        candidate_data, 
+        user_idx: int, 
+        candidate_idx: int,
+        semester_diff: int, 
+        distance_km: float = None
+    ) -> Dict:
         profile = candidate_data.get('profile', {})
         
         recommendation = {
@@ -269,17 +313,15 @@ class AcademicMatcher:
             }
         }
         
-        # Agregar distancia como información adicional
         if distance_km is not None:
             recommendation["distance_info"] = {
                 "distance_km": round(distance_km, 1),
-                "note": "Distancia informativa, no afecta el matching"
+                "note": "Distancia informativa"
             }
         
         return recommendation
     
     def _calculate_compatibility_metrics(self, recommendations: List[Dict], user_info: Dict) -> Dict:
-        """Calcula métricas de compatibilidad"""
         if not recommendations:
             return {
                 "pct_semester_compatible": 0,
@@ -298,8 +340,17 @@ class AcademicMatcher:
             "primary_filter": "semester_difference"
         }
     
+    def clear_cache(self, user_id: str = None):
+        if user_id:
+            keys_to_remove = [k for k in self._recommendation_cache.keys() if k.startswith(f"{user_id}:")]
+            for key in keys_to_remove:
+                del self._recommendation_cache[key]
+            print(f"🗑️ Cache limpiado para {user_id}")
+        else:
+            self._recommendation_cache.clear()
+            print("🗑️ Cache completo limpiado")
+    
     def get_model_stats(self):
-        """Estadísticas del modelo"""
         if not self.model_trained:
             raise HTTPException(status_code=400, detail="Modelo no entrenado")
         
@@ -308,137 +359,14 @@ class AcademicMatcher:
             "feature_dimensions": self.feature_matrix.shape[1],
             "k_neighbors": self.knn_model.n_neighbors,
             "feature_weights": self.preprocessor.feature_weights,
-            "filter_strategy": "Semester-focused (distance informative only)"
+            "filter_strategy": "Semester-focused with bonus scoring",
+            "cache_size": len(self._recommendation_cache)
         }
     
     def is_healthy(self):
-        """Health check"""
         return {
             "model_trained": self.model_trained,
             "users_loaded": len(self.user_data) if self.user_data is not None else 0,
-            "filtering_mode": "semester_priority"
+            "filtering_mode": "semester_priority_with_bonus",
+            "cache_entries": len(self._recommendation_cache)
         }
-    # Agregar estos métodos a tu clase AcademicMatcher (después del método is_healthy)
-
-    def _convert_mongo_doc_to_dataframe_row(self, user_doc: Dict) -> Dict:
-        """
-        Convierte un documento de MongoDB al formato esperado por el DataFrame
-        """
-        profile = user_doc.get('profile', {})
-        skills = user_doc.get('skills', {})
-        objectives = user_doc.get('objectives', {})
-        
-        return {
-            'user_id': user_doc.get('user_id') or str(user_doc.get('_id')),
-            'profile': profile,
-            'skills': skills,
-            'objectives': objectives,
-            # Agregar otros campos según tu estructura
-        }
-
-    def _rebuild_features(self):
-        """
-        Reconstruye features_list y feature_matrix desde user_data
-        Usado después de sincronización masiva
-        """
-        print("🔨 Reconstruyendo features desde user_data...")
-        
-        if self.user_data is None or len(self.user_data) == 0:
-            print("⚠️ No hay datos de usuarios para reconstruir features")
-            self.features_list = []
-            self.feature_matrix = None
-            return
-        
-        try:
-            # Convertir user_data a formato lista de diccionarios
-            users_list = self.user_data.to_dict('records')
-            
-            # Usar el preprocessor para extraer features (como en train_model)
-            self.features_list, _ = self.preprocessor.extract_user_features(users_list)
-            
-            # Crear matriz de features
-            self.feature_matrix = self.preprocessor.create_feature_matrix(self.features_list)
-            
-            print(f"✅ Features reconstruidas: {len(self.features_list)} usuarios")
-            print(f"   Dimensiones matriz: {self.feature_matrix.shape}")
-            
-        except Exception as e:
-            print(f"❌ Error reconstruyendo features: {e}")
-            raise
-
-    def _rebuild_knn_model(self):
-        """
-        Reconstruye el modelo KNN desde feature_matrix actual
-        Usado después de sincronización masiva
-        """
-        print("🔨 Reconstruyendo modelo KNN...")
-        
-        if self.feature_matrix is None or len(self.features_list) == 0:
-            print("⚠️ No hay features para construir el modelo")
-            self.model_trained = False
-            return
-        
-        try:
-            # Calcular K óptimo
-            optimal_k = min(
-                settings.OPTIMAL_K_NEIGHBORS,
-                max(3, len(self.features_list) - 1)
-            )
-            
-            # Crear y entrenar modelo KNN
-            self.knn_model = NearestNeighbors(
-                n_neighbors=optimal_k,
-                metric=settings.KNN_METRIC,
-                algorithm=settings.KNN_ALGORITHM
-            )
-            
-            self.knn_model.fit(self.feature_matrix)
-            self.model_trained = True
-            
-            print(f"✅ Modelo KNN reconstruido:")
-            print(f"   K vecinos: {optimal_k}")
-            print(f"   Total usuarios: {len(self.features_list)}")
-            print(f"   Dimensiones: {self.feature_matrix.shape}")
-            
-        except Exception as e:
-            print(f"❌ Error reconstruyendo modelo KNN: {e}")
-            self.model_trained = False
-            raise
-
-    def _reload_single_user(self, user_id: str):
-        """
-        Recarga un usuario específico desde MongoDB
-        Usado en el endpoint /users/sync
-        """
-        from bson import ObjectId
-        
-        # Conectar a la base de datos
-        self.db_manager.connect()
-        
-        try:
-            # Buscar usuario en MongoDB
-            user_doc = self.db_manager.collection.find_one({"_id": ObjectId(user_id)})
-            
-            if not user_doc:
-                raise ValueError(f"Usuario {user_id} no encontrado en MongoDB")
-            
-            # Convertir a formato DataFrame
-            user_row = self._convert_mongo_doc_to_dataframe_row(user_doc)
-            
-            # Agregar al DataFrame
-            self.user_data = pd.concat(
-                [self.user_data, pd.DataFrame([user_row])], 
-                ignore_index=True
-            )
-            
-            print(f"✅ Usuario {user_id} recargado exitosamente")
-            
-            # Reconstruir features y modelo
-            self._rebuild_features()
-            self._rebuild_knn_model()
-            
-        except Exception as e:
-            print(f"❌ Error recargando usuario {user_id}: {e}")
-            raise
-        finally:
-            self.db_manager.close()
